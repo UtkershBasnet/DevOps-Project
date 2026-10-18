@@ -9,7 +9,7 @@ Tiny notes API (Express + Redis) used as a DevOps reference project.
 
 | | |
 |---|---|
-| Baseline commit | tag `baseline` (`3188f91dfdd6137d35b74613960e986661798d33`) |
+| Baseline commit | tag `baseline` (`13850841a567d3fe0970ea8af3a6618fd1029734`) |
 | Baseline contents | plain app + unit tests. No Docker, Kubernetes, CI, metrics, health checks or security config. |
 | Final | branch `devops-improvements` (one PR into `main`) |
 
