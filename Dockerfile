@@ -1,11 +1,11 @@
 # --- build stage: install production deps only
-FROM node:20-alpine AS deps
+FROM node:26-alpine AS deps
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev
 
 # --- runtime stage: small, non-root
-FROM node:20-alpine
+FROM node:26-alpine
 ARG APP_VERSION=dev
 ARG GIT_SHA=unknown
 ENV NODE_ENV=production APP_VERSION=${APP_VERSION} GIT_SHA=${GIT_SHA}
