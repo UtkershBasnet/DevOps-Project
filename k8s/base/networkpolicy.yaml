@@ -1,0 +1,40 @@
+# default deny, then allow only what the request path needs
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: app-allow
+spec:
+  podSelector:
+    matchLabels: { app: notes-app }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports: [{ port: 3000 }]       # clients, ingress and Prometheus scrapes
+  egress:
+    - to:
+        - podSelector: { matchLabels: { app: redis } }
+      ports: [{ port: 6379 }]
+    - to:                           # DNS
+        - namespaceSelector: {}
+          podSelector: { matchLabels: { k8s-app: kube-dns } }
+      ports: [{ port: 53, protocol: UDP }, { port: 53, protocol: TCP }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-allow
+spec:
+  podSelector:
+    matchLabels: { app: redis }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: notes-app } }
+      ports: [{ port: 6379 }]

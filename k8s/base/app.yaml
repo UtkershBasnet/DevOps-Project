@@ -1,0 +1,105 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: notes-app
+automountServiceAccountToken: false   # the app never talks to the Kubernetes API
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: notes-app-config
+data:
+  PORT: "3000"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notes-app
+  labels: { app: notes-app }
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5          # kept for `kubectl rollout undo`
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0            # never drop below desired capacity
+      maxSurge: 1
+  selector:
+    matchLabels: { app: notes-app }
+  template:
+    metadata:
+      labels: { app: notes-app }
+    spec:
+      serviceAccountName: notes-app
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: notes-app
+          image: notes-app          # tag set per overlay (CI sets it to the commit SHA)
+          ports:
+            - { name: http, containerPort: 3000 }
+          envFrom:
+            - configMapRef: { name: notes-app-config }
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: notes-secrets, key: redis-password }
+            - name: REDIS_URL
+              value: redis://:$(REDIS_PASSWORD)@redis:6379
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 2
+            failureThreshold: 15
+          readinessProbe:           # gates traffic on Redis being reachable
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 5
+          livenessProbe:            # restarts only if the process is wedged
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 192Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+      topologySpreadConstraints:    # spread replicas across nodes when more than one exists
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: { app: notes-app }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notes-app
+  labels: { app: notes-app }
+spec:
+  selector: { app: notes-app }
+  ports:
+    - { name: http, port: 80, targetPort: http }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: notes-app
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app: notes-app }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: notes-app
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: notes-app }
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 70 }
