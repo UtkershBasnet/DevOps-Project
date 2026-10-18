@@ -1,0 +1,206 @@
+# Minimal Prometheus + Grafana (no operator needed, works on kind/minikube).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: monitoring
+data:
+  rules.yml: |
+    groups:
+      - name: notes-app
+        rules:
+          # SLI: share of non-5xx requests. SLO: 99% over 5m window (demo-sized window).
+          - record: notes:availability:ratio_5m
+            expr: |
+              sum(rate(http_request_duration_seconds_count{status!~"5.."}[5m]))
+              / sum(rate(http_request_duration_seconds_count[5m]))
+          - alert: NotesHighErrorRate
+            expr: notes:availability:ratio_5m < 0.99
+            for: 2m
+            labels: { severity: page }
+            annotations:
+              summary: "Notes API availability below 99%"
+              action: "See docs/RUNBOOK.md#high-error-rate; consider kubectl rollout undo"
+          - alert: NotesHighLatencyP95
+            expr: histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[5m]))) > 0.5
+            for: 5m
+            labels: { severity: ticket }
+            annotations:
+              summary: "p95 latency above 500ms"
+          - alert: NotesPodDown
+            expr: up{job="notes-app"} == 0
+            for: 1m
+            labels: { severity: page }
+            annotations:
+              summary: "A notes-app pod is not scrapeable"
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+    rule_files: [/etc/prometheus/rules.yml]
+    scrape_configs:
+      - job_name: notes-app
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces: { names: [notes] }
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            regex: notes-app
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_container_port_number]
+            regex: "3000"
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: prometheus-discovery
+  namespace: notes
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: prometheus-discovery
+  namespace: notes
+subjects:
+  - { kind: ServiceAccount, name: prometheus, namespace: monitoring }
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: prometheus-discovery
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: prometheus }
+  template:
+    metadata:
+      labels: { app: prometheus }
+    spec:
+      serviceAccountName: prometheus
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.53.0
+          args: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=24h"]
+          ports: [{ containerPort: 9090 }]
+          readinessProbe:
+            httpGet: { path: /-/ready, port: 9090 }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 384Mi }
+          volumeMounts:
+            - { name: config, mountPath: /etc/prometheus }
+      volumes:
+        - name: config
+          configMap: { name: prometheus-config }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: monitoring
+spec:
+  selector: { app: prometheus }
+  ports: [{ port: 9090 }]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-provisioning
+  namespace: monitoring
+data:
+  datasource.yml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        url: http://prometheus:9090
+        isDefault: true
+  dashboards.yml: |
+    apiVersion: 1
+    providers:
+      - name: default
+        folder: ""
+        type: file
+        options: { path: /var/lib/grafana/dashboards }
+  notes.json: |
+    {
+      "title": "Notes App",
+      "uid": "notes-app",
+      "schemaVersion": 39,
+      "refresh": "10s",
+      "time": { "from": "now-30m", "to": "now" },
+      "panels": [
+        { "id": 1, "type": "timeseries", "title": "Requests / sec by route", "gridPos": {"x":0,"y":0,"w":12,"h":8},
+          "targets": [{ "expr": "sum by (route) (rate(http_request_duration_seconds_count[1m]))" }] },
+        { "id": 2, "type": "timeseries", "title": "p95 latency", "gridPos": {"x":12,"y":0,"w":12,"h":8},
+          "targets": [{ "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[1m])))" }] },
+        { "id": 3, "type": "stat", "title": "Availability (5m SLI)", "gridPos": {"x":0,"y":8,"w":8,"h":6},
+          "targets": [{ "expr": "notes:availability:ratio_5m" }] },
+        { "id": 4, "type": "table", "title": "Running version", "gridPos": {"x":8,"y":8,"w":16,"h":6},
+          "targets": [{ "expr": "notes_app_build_info", "format": "table", "instant": true }] }
+      ]
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: grafana }
+  template:
+    metadata:
+      labels: { app: grafana }
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:11.1.0
+          env:
+            - { name: GF_AUTH_ANONYMOUS_ENABLED, value: "true" }
+            - { name: GF_AUTH_ANONYMOUS_ORG_ROLE, value: Viewer }
+          ports: [{ containerPort: 3000 }]
+          readinessProbe:
+            httpGet: { path: /api/health, port: 3000 }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 384Mi }
+          volumeMounts:
+            - { name: prov, mountPath: /etc/grafana/provisioning/datasources/datasource.yml, subPath: datasource.yml }
+            - { name: prov, mountPath: /etc/grafana/provisioning/dashboards/dashboards.yml, subPath: dashboards.yml }
+            - { name: prov, mountPath: /var/lib/grafana/dashboards/notes.json, subPath: notes.json }
+      volumes:
+        - name: prov
+          configMap: { name: grafana-provisioning }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: monitoring
+spec:
+  selector: { app: grafana }
+  ports: [{ port: 3000 }]

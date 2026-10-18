@@ -31,3 +31,23 @@ test('rejects empty text', async () => {
     assert.strictEqual(r.status, 400);
   });
 });
+
+test('health, readiness, version and metrics endpoints', async () => {
+  await withServer(async (base) => {
+    assert.strictEqual((await fetch(`${base}/healthz`)).status, 200);
+    assert.strictEqual((await fetch(`${base}/readyz`)).status, 200);
+    assert.ok((await (await fetch(`${base}/version`)).json()).version);
+    await fetch(`${base}/notes`);
+    const metrics = await (await fetch(`${base}/metrics`)).text();
+    assert.match(metrics, /http_request_duration_seconds_count\{[^}]*route="\/notes"/);
+  });
+});
+
+test('readyz returns 503 when store is down', async () => {
+  const store = { ...createMemoryStore(), ping: async () => { throw new Error('down'); } };
+  const server = createApp(store).listen(0);
+  try {
+    const r = await fetch(`http://127.0.0.1:${server.address().port}/readyz`);
+    assert.strictEqual(r.status, 503);
+  } finally { server.close(); }
+});
