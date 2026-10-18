@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 env:
-  IMAGE: ghcr.io/${{ github.repository }}
+  IMAGE: ghcr.io/utkershbasnet/devops-project   # must be lowercase
 
 jobs:
   test:
