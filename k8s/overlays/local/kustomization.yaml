@@ -5,5 +5,5 @@ resources:
 # CI rewrites newTag to the commit SHA; this is what makes the running version traceable.
 images:
   - name: notes-app
-    newName: notes-app
-    newTag: local
+    newName: ghcr.io/utkershbasnet/devops-project
+    newTag: 51ff6371f4e02f944eedcafd6b9accb11f340dcb
