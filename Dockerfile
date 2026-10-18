@@ -13,6 +13,6 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY package*.json ./
 COPY src ./src
-USER node
+USER 1000
 EXPOSE 3000
 CMD ["node", "src/server.js"]
